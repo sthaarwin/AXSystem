@@ -659,7 +659,6 @@ export const TEMPLATES: ArchTemplate[] = [
       { source: "gateway", target: "b" },
       { source: "a", target: "cache" },
       { source: "a", target: "sql" },
-      { source: "a", target: "replica" },
       { source: "sql", target: "replica" },
       { source: "b", target: "queue" },
       { source: "queue", target: "worker" },
