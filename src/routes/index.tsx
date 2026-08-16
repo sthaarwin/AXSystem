@@ -26,6 +26,8 @@ import {
   type ComponentKind,
   type NodeData,
 } from "@/lib/architecture";
+import { Copy, Pencil, Trash2 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/")({
@@ -88,6 +90,12 @@ function CanvasPage() {
   const [collapsed, setCollapsed] = useState(false);
   const [simulating, setSimulating] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{
+    target: "node" | "edge";
+    id: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const wrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
 
@@ -189,6 +197,55 @@ function CanvasPage() {
     [setNodes, setEdges],
   );
 
+  const copyNode = useCallback(
+    (id: string) => {
+      setNodes((ns) => {
+        const src = ns.find((n) => n.id === id);
+        if (!src) return ns;
+        return ns.concat({
+          ...src,
+          id: nextId(),
+          position: { x: src.position.x + 40, y: src.position.y + 40 },
+          data: {
+            ...(src.data as object),
+            cpu: 12 + Math.random() * 10,
+            memory: 18 + Math.random() * 12,
+          },
+        });
+      });
+      setSelectedId(null);
+    },
+    [setNodes],
+  );
+
+  const closeMenu = useCallback(() => setMenu(null), []);
+
+  const openMenuAt = useCallback((event: React.MouseEvent, target: "node" | "edge", id: string) => {
+    event.preventDefault();
+    const bounds = wrapper.current?.getBoundingClientRect();
+    setMenu({
+      target,
+      id,
+      x: bounds ? event.clientX - bounds.left : event.clientX,
+      y: bounds ? event.clientY - bounds.top : event.clientY,
+    });
+  }, []);
+
+  const onNodeContextMenu = useCallback(
+    (event: React.MouseEvent, node: Node) => openMenuAt(event, "node", node.id),
+    [openMenuAt],
+  );
+
+  const onEdgeContextMenu = useCallback(
+    (event: React.MouseEvent, edge: Edge) => openMenuAt(event, "edge", edge.id),
+    [openMenuAt],
+  );
+
+  const deleteEdge = useCallback(
+    (id: string) => setEdges((es) => es.filter((e) => e.id !== id)),
+    [setEdges],
+  );
+
   const toggleSimulate = useCallback(() => {
     if (simulating) {
       setSimulating(false);
@@ -272,8 +329,16 @@ function CanvasPage() {
               e.preventDefault();
               e.dataTransfer.dropEffect = "move";
             }}
-            onNodeClick={(_, node) => setSelectedId(node.id)}
-            onPaneClick={() => setSelectedId(null)}
+            onNodeClick={(_, node) => {
+              setSelectedId(node.id);
+              closeMenu();
+            }}
+            onNodeContextMenu={onNodeContextMenu}
+            onEdgeContextMenu={onEdgeContextMenu}
+            onPaneClick={() => {
+              setSelectedId(null);
+              closeMenu();
+            }}
             fitView
             proOptions={{ hideAttribution: true }}
             className="bg-background"
@@ -296,8 +361,83 @@ function CanvasPage() {
             onClose={() => setSelectedId(null)}
             onDelete={deleteNode}
           />
+
+          {menu && (
+            <>
+              <div className="fixed inset-0 z-30" onPointerDown={closeMenu} />
+              <div
+                className="absolute z-40 w-44 overflow-hidden rounded-2xl border border-border bg-surface-2 py-1.5 shadow-[var(--shadow-elev)]"
+                style={{ left: menu.x, top: menu.y }}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                {menu.target === "node" ? (
+                  <>
+                    <MenuItem
+                      icon={Copy}
+                      label="Copy node"
+                      onClick={() => {
+                        copyNode(menu.id);
+                        closeMenu();
+                      }}
+                    />
+                    <MenuItem
+                      icon={Pencil}
+                      label="Update"
+                      onClick={() => {
+                        setSelectedId(menu.id);
+                        closeMenu();
+                      }}
+                    />
+                    <MenuItem
+                      icon={Trash2}
+                      label="Delete node"
+                      danger
+                      onClick={() => {
+                        deleteNode(menu.id);
+                        closeMenu();
+                      }}
+                    />
+                  </>
+                ) : (
+                  <MenuItem
+                    icon={Trash2}
+                    label="Unlink"
+                    danger
+                    onClick={() => {
+                      deleteEdge(menu.id);
+                      closeMenu();
+                    }}
+                  />
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
+  );
+}
+
+function MenuItem({
+  icon: Icon,
+  label,
+  danger,
+  onClick,
+}: {
+  icon: LucideIcon;
+  label: string;
+  danger?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`m3-ripple flex w-full items-center gap-2.5 px-4 py-2 text-left text-sm ${
+        danger ? "text-destructive" : "text-foreground hover:bg-surface-3"
+      }`}
+    >
+      <Icon size={15} />
+      {label}
+    </button>
   );
 }

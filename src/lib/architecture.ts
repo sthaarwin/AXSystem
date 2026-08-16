@@ -194,15 +194,20 @@ export function missingRequired(
     adj.get(e.source)?.push(e.target);
     adj.get(e.target)?.push(e.source);
   }
-  const computeNode = kinds.find((n) => n.kind.category === "Compute")!.id;
-  const seen = new Set<string>([computeNode]);
-  const queue = [computeNode];
-  while (queue.length > 0) {
-    const id = queue.shift()!;
-    for (const next of adj.get(id) ?? []) {
-      if (!seen.has(next)) {
-        seen.add(next);
-        queue.push(next);
+
+  // Any compute node talking to any database is a working system, so flood
+  // from every compute node and require at least one db to be reached.
+  const seen = new Set<string>();
+  const queue = kinds.filter((n) => n.kind.category === "Compute").map((n) => n.id);
+  if (queue.length > 0) {
+    seen.add(...queue);
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      for (const next of adj.get(id) ?? []) {
+        if (!seen.has(next)) {
+          seen.add(next);
+          queue.push(next);
+        }
       }
     }
   }
