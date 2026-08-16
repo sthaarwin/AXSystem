@@ -19,10 +19,14 @@ import "@xyflow/react/dist/style.css";
 import { ArchNode } from "@/components/canvas/ArchNode";
 import { ConfigDrawer } from "@/components/canvas/ConfigDrawer";
 import { ControlBar } from "@/components/canvas/ControlBar";
+import { FlowEdge } from "@/components/canvas/FlowEdge";
 import { PaletteSidebar } from "@/components/canvas/PaletteSidebar";
 import {
   KIND_BY_TYPE,
+  edgeHandleKeys,
   missingRequired,
+  newEdgeData,
+  simulateTick,
   type ComponentKind,
   type NodeData,
 } from "@/lib/architecture";
@@ -57,8 +61,8 @@ export const Route = createFileRoute("/")({
 });
 
 const nodeTypes = { arch: ArchNode };
-let idCounter = 0;
-const nextId = () => `n${++idCounter}`;
+const edgeTypes = { flow: FlowEdge };
+const nextId = () => crypto.randomUUID();
 
 function makeNode(
   kind: ComponentKind,
@@ -79,6 +83,9 @@ function makeNode(
       liveLatency: kind.latency,
       cpu: 12 + Math.random() * 10,
       memory: 18 + Math.random() * 12,
+      storage: kind.category === "Database & Cache" ? 20 + Math.random() * 15 : 0,
+      users: kind.category === "Traffic" ? 100 + Math.random() * 400 : 0,
+      liveUsers: kind.category === "Traffic" ? 100 + Math.random() * 400 : 0,
       simulating,
     } satisfies NodeData,
   };
@@ -99,12 +106,91 @@ function CanvasPage() {
   const wrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
 
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+  const edgesRef = useRef(edges);
+  edgesRef.current = edges;
+
   const addNode = useCallback(
     (kind: ComponentKind, position?: { x: number; y: number }) => {
       const pos = position ?? { x: 220 + Math.random() * 240, y: 120 + Math.random() * 240 };
       setNodes((ns) => ns.concat(makeNode(kind, pos, simulating)));
     },
     [setNodes, simulating],
+  );
+
+  const applyTemplate = useCallback(
+    (template: ArchTemplate) => {
+      const idMap = new Map<string, string>();
+      const posMap = new Map<string, { x: number; y: number }>();
+      const newNodes = template.nodes.map((t) => {
+        const kind = KIND_BY_TYPE[t.type];
+        if (!kind) return null;
+        const id = nextId();
+        idMap.set(t.id, id);
+        posMap.set(t.id, t.position);
+        return {
+          id,
+          type: "arch",
+          position: t.position,
+          data: {
+            type: kind.type,
+            label: t.label ?? kind.label,
+            instances: t.instances ?? 1,
+            strategy: kind.strategies[0],
+            cost: kind.cost,
+            latency: kind.latency,
+            liveLatency: kind.latency,
+            cpu: 12 + Math.random() * 10,
+            memory: 18 + Math.random() * 12,
+            storage: kind.category === "Database & Cache" ? 20 + Math.random() * 15 : 0,
+            users: kind.category === "Traffic" ? 100 + Math.random() * 400 : 0,
+            liveUsers: kind.category === "Traffic" ? 100 + Math.random() * 400 : 0,
+            simulating,
+          } satisfies NodeData,
+        } as Node;
+      });
+      const newEdges = template.edges
+        .map((e) => {
+          const source = idMap.get(e.source);
+          const target = idMap.get(e.target);
+          const sPos = posMap.get(e.source);
+          const tPos = posMap.get(e.target);
+          if (!source || !target || !sPos || !tPos) return null;
+          const handles = edgeHandleKeys(sPos, tPos);
+          return {
+            id: nextId(),
+            source,
+            target,
+            sourceHandle: handles.sourceHandle,
+            targetHandle: handles.targetHandle,
+          };
+        })
+        .filter(
+          (
+            e,
+          ): e is {
+            id: string;
+            source: string;
+            target: string;
+            sourceHandle: string;
+            targetHandle: string;
+          } => !!e,
+        )
+        .map((e) => ({
+          ...e,
+          type: "flow",
+          animated: true,
+          data: newEdgeData(),
+          style: { stroke: "var(--secondary)", strokeWidth: 2 },
+        })) as Edge[];
+      setSimulating(false);
+      setNodes(newNodes.filter((n): n is Node => !!n));
+      setEdges(newEdges);
+      setSelectedId(null);
+      setMenu(null);
+    },
+    [setNodes, setEdges, simulating],
   );
 
   const onDrop = useCallback(
@@ -120,67 +206,76 @@ function CanvasPage() {
 
   const onConnect = useCallback(
     (params: Connection) =>
-      setEdges((es) =>
-        addEdge(
+      setEdges((es) => {
+        const src = nodes.find((n) => n.id === params.source);
+        const tgt = nodes.find((n) => n.id === params.target);
+        const handles = src && tgt ? edgeHandleKeys(src.position, tgt.position) : null;
+        return addEdge(
           {
             ...params,
+            type: "flow",
             animated: true,
+            sourceHandle: params.sourceHandle ?? handles?.sourceHandle,
+            targetHandle: params.targetHandle ?? handles?.targetHandle,
+            data: newEdgeData(),
             style: { stroke: "var(--secondary)", strokeWidth: 2 },
           },
           es,
-        ),
-      ),
-    [setEdges],
+        );
+      }),
+    [setEdges, nodes],
   );
 
   // Traffic simulation: live CPU / memory drift
   useEffect(() => {
     setNodes((ns) => ns.map((n) => ({ ...n, data: { ...n.data, simulating } })));
     if (!simulating) {
-      const t = setTimeout(
-        () =>
-          setNodes((ns) =>
-            ns.map((n) => ({
+      const t = setTimeout(() => {
+        setNodes((ns) =>
+          ns.map((n) => {
+            const kind = KIND_BY_TYPE[(n.data as unknown as NodeData).type];
+            return {
               ...n,
               data: {
-                ...n.data,
+                ...(n.data as object),
                 cpu: 12 + Math.random() * 10,
                 memory: 18 + Math.random() * 12,
+                storage: kind?.category === "Database & Cache" ? 20 + Math.random() * 15 : 0,
+                users: kind?.category === "Traffic" ? 100 + Math.random() * 400 : 0,
+                liveUsers: kind?.category === "Traffic" ? 100 + Math.random() * 400 : 0,
                 liveLatency: n.data.latency,
               },
-            })),
-          ),
-        200,
-      );
+            };
+          }),
+        );
+        setEdges((es) => es.map((e) => ({ ...e, data: { ...(e.data as object), rps: 0 } })));
+      }, 200);
       return () => clearTimeout(t);
     }
     const interval = setInterval(() => {
+      const { nodePatches, edgePatches } = simulateTick(
+        nodesRef.current.map((n) => ({
+          id: n.id,
+          type: (n.data as unknown as NodeData).type,
+          data: n.data as unknown as NodeData,
+        })),
+        edgesRef.current.map((e) => ({ id: e.id, source: e.source, target: e.target })),
+      );
       setNodes((ns) =>
         ns.map((n) => {
-          const d = n.data as unknown as NodeData;
-          const demand = 30 + Math.random() * 65;
-          const nextCpu = Math.min(
-            99,
-            Math.max(5, d.cpu + (demand - d.cpu) * 0.25 + (Math.random() - 0.5) * 14),
-          );
-          const nextMemory = Math.min(
-            99,
-            Math.max(8, d.memory + (demand * 0.85 - d.memory) * 0.2 + (Math.random() - 0.5) * 8),
-          );
-          return {
-            ...n,
-            data: {
-              ...d,
-              cpu: nextCpu,
-              memory: nextMemory,
-              liveLatency: Math.round(d.latency * (1 + nextCpu / 100) + Math.random() * 4),
-            },
-          };
+          const patch = nodePatches.get(n.id);
+          return patch ? { ...n, data: { ...(n.data as object), ...patch } } : n;
+        }),
+      );
+      setEdges((es) =>
+        es.map((e) => {
+          const patch = edgePatches.get(e.id);
+          return patch ? { ...e, data: { ...(e.data as object), ...patch } } : e;
         }),
       );
     }, 600);
     return () => clearInterval(interval);
-  }, [simulating, setNodes]);
+  }, [simulating, setNodes, setEdges]);
 
   const updateNode = useCallback(
     (id: string, patch: Partial<NodeData>) =>
@@ -314,6 +409,7 @@ function CanvasPage() {
           collapsed={collapsed}
           onToggle={() => setCollapsed((c) => !c)}
           onAdd={(kind) => addNode(kind)}
+          onApplyTemplate={applyTemplate}
         />
 
         <div className="relative min-w-0 flex-1" ref={wrapper}>
@@ -321,6 +417,7 @@ function CanvasPage() {
             nodes={nodes}
             edges={edges}
             nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
@@ -335,6 +432,7 @@ function CanvasPage() {
             }}
             onNodeContextMenu={onNodeContextMenu}
             onEdgeContextMenu={onEdgeContextMenu}
+            connectionMode="loose"
             onPaneClick={() => {
               setSelectedId(null);
               closeMenu();

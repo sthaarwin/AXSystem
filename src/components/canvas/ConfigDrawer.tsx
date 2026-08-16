@@ -28,7 +28,11 @@ export function ConfigDrawer({
               <p className="text-sm font-medium text-foreground">Configure node</p>
               <p className="text-[11px] text-muted-foreground">{kind.category}</p>
             </div>
-            <button onClick={onClose} aria-label="Close panel" className="m3-ripple rounded-full p-2 text-muted-foreground">
+            <button
+              onClick={onClose}
+              aria-label="Close panel"
+              className="m3-ripple rounded-full p-2 text-muted-foreground"
+            >
               <X size={18} />
             </button>
           </div>
@@ -42,16 +46,35 @@ export function ConfigDrawer({
               />
             </Field>
 
-            <Field label={`Instance count · ${node.data.instances}`}>
-              <input
-                type="range"
-                min={1}
-                max={20}
-                value={node.data.instances}
-                onChange={(e) => onChange(node.id, { instances: Number(e.target.value) })}
-                className="w-full accent-[var(--primary)]"
-              />
-            </Field>
+            {kind.category === "Traffic" ? (
+              <Field label={`Concurrent users · ${node.data.users.toLocaleString()}`}>
+                <input
+                  type="range"
+                  min={50}
+                  max={8000}
+                  step={50}
+                  value={node.data.users}
+                  onChange={(e) =>
+                    onChange(node.id, {
+                      users: Number(e.target.value),
+                      liveUsers: Number(e.target.value),
+                    })
+                  }
+                  className="w-full accent-[var(--primary)]"
+                />
+              </Field>
+            ) : (
+              <Field label={`Instance count · ${node.data.instances}`}>
+                <input
+                  type="range"
+                  min={1}
+                  max={20}
+                  value={node.data.instances}
+                  onChange={(e) => onChange(node.id, { instances: Number(e.target.value) })}
+                  className="w-full accent-[var(--primary)]"
+                />
+              </Field>
+            )}
 
             <Field label={kind.strategyLabel}>
               <div className="flex flex-wrap gap-2">
@@ -71,34 +94,40 @@ export function ConfigDrawer({
               </div>
             </Field>
 
-            <Field label="Cost per hour ($)">
-              <input
-                type="number"
-                step="0.01"
-                min={0}
-                value={node.data.cost}
-                onChange={(e) => onChange(node.id, { cost: Math.max(0, Number(e.target.value)) })}
-                className="w-full rounded-2xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-foreground outline-none focus:border-primary"
-              />
-            </Field>
+            {kind.category !== "Traffic" && (
+              <Field label="Cost per hour ($)">
+                <input
+                  type="number"
+                  step="0.01"
+                  min={0}
+                  value={node.data.cost}
+                  onChange={(e) => onChange(node.id, { cost: Math.max(0, Number(e.target.value)) })}
+                  className="w-full rounded-2xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-foreground outline-none focus:border-primary"
+                />
+              </Field>
+            )}
 
-            <Field label={`Latency impact · ${node.data.latency} ms`}>
-              <input
-                type="range"
-                min={0}
-                max={300}
-                value={node.data.latency}
-                onChange={(e) => onChange(node.id, { latency: Number(e.target.value) })}
-                className="w-full accent-[var(--primary)]"
-              />
-            </Field>
+            {kind.category !== "Traffic" && (
+              <Field label={`Latency impact · ${node.data.latency} ms`}>
+                <input
+                  type="range"
+                  min={0}
+                  max={300}
+                  value={node.data.latency}
+                  onChange={(e) => onChange(node.id, { latency: Number(e.target.value) })}
+                  className="w-full accent-[var(--primary)]"
+                />
+              </Field>
+            )}
 
-            <div className="rounded-2xl bg-surface-2 px-4 py-3 text-xs text-muted-foreground">
-              Monthly estimate
-              <span className="ml-2 font-medium text-secondary">
-                ${(node.data.cost * node.data.instances * 730).toFixed(2)}
-              </span>
-            </div>
+            {kind.category !== "Traffic" && (
+              <div className="rounded-2xl bg-surface-2 px-4 py-3 text-xs text-muted-foreground">
+                Monthly estimate
+                <span className="ml-2 font-medium text-secondary">
+                  ${(node.data.cost * node.data.instances * 730).toFixed(2)}
+                </span>
+              </div>
+            )}
           </div>
 
           <div className="border-t border-border p-4">
