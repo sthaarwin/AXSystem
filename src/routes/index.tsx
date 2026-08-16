@@ -20,7 +20,13 @@ import { ArchNode } from "@/components/canvas/ArchNode";
 import { ConfigDrawer } from "@/components/canvas/ConfigDrawer";
 import { ControlBar } from "@/components/canvas/ControlBar";
 import { PaletteSidebar } from "@/components/canvas/PaletteSidebar";
-import { KIND_BY_TYPE, type ComponentKind, type NodeData } from "@/lib/architecture";
+import {
+  KIND_BY_TYPE,
+  missingRequired,
+  type ComponentKind,
+  type NodeData,
+} from "@/lib/architecture";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -52,7 +58,11 @@ const nodeTypes = { arch: ArchNode };
 let idCounter = 0;
 const nextId = () => `n${++idCounter}`;
 
-function makeNode(kind: ComponentKind, position: { x: number; y: number }, simulating: boolean): Node {
+function makeNode(
+  kind: ComponentKind,
+  position: { x: number; y: number },
+  simulating: boolean,
+): Node {
   return {
     id: nextId(),
     type: "arch",
@@ -64,6 +74,7 @@ function makeNode(kind: ComponentKind, position: { x: number; y: number }, simul
       strategy: kind.strategies[0],
       cost: kind.cost,
       latency: kind.latency,
+      liveLatency: kind.latency,
       cpu: 12 + Math.random() * 10,
       memory: 18 + Math.random() * 12,
       simulating,
@@ -123,7 +134,12 @@ function CanvasPage() {
           setNodes((ns) =>
             ns.map((n) => ({
               ...n,
-              data: { ...n.data, cpu: 12 + Math.random() * 10, memory: 18 + Math.random() * 12 },
+              data: {
+                ...n.data,
+                cpu: 12 + Math.random() * 10,
+                memory: 18 + Math.random() * 12,
+                liveLatency: n.data.latency,
+              },
             })),
           ),
         200,
@@ -134,18 +150,27 @@ function CanvasPage() {
       setNodes((ns) =>
         ns.map((n) => {
           const d = n.data as unknown as NodeData;
-          const load = 70 / Math.max(1, d.instances) + Math.random() * 45;
+          const demand = 30 + Math.random() * 65;
+          const nextCpu = Math.min(
+            99,
+            Math.max(5, d.cpu + (demand - d.cpu) * 0.25 + (Math.random() - 0.5) * 14),
+          );
+          const nextMemory = Math.min(
+            99,
+            Math.max(8, d.memory + (demand * 0.85 - d.memory) * 0.2 + (Math.random() - 0.5) * 8),
+          );
           return {
             ...n,
             data: {
               ...d,
-              cpu: Math.min(99, d.cpu * 0.55 + load * 0.45),
-              memory: Math.min(99, d.memory * 0.6 + (load * 0.9 + 10) * 0.4),
+              cpu: nextCpu,
+              memory: nextMemory,
+              liveLatency: Math.round(d.latency * (1 + nextCpu / 100) + Math.random() * 4),
             },
           };
         }),
       );
-    }, 900);
+    }, 600);
     return () => clearInterval(interval);
   }, [simulating, setNodes]);
 
@@ -163,6 +188,24 @@ function CanvasPage() {
     },
     [setNodes, setEdges],
   );
+
+  const toggleSimulate = useCallback(() => {
+    if (simulating) {
+      setSimulating(false);
+      return;
+    }
+    const missing = missingRequired(
+      nodes.map((n) => ({ id: n.id, type: (n.data as unknown as NodeData).type })),
+      edges.map((e) => ({ source: e.source, target: e.target })),
+    );
+    if (missing.length > 0) {
+      toast.error("Can't run traffic simulation", {
+        description: `Add ${missing.join(" and ")}`,
+      });
+      return;
+    }
+    setSimulating(true);
+  }, [simulating, nodes, edges]);
 
   const monthlyCost = useMemo(
     () =>
@@ -200,7 +243,7 @@ function CanvasPage() {
         monthlyCost={monthlyCost}
         simulating={simulating}
         nodeCount={nodes.length}
-        onToggleSimulate={() => setSimulating((s) => !s)}
+        onToggleSimulate={toggleSimulate}
         onClear={() => {
           setNodes([]);
           setEdges([]);

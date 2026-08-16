@@ -14,6 +14,7 @@ export function ArchNode({ data, selected }: NodeProps) {
   const kind = KIND_BY_TYPE[d.type];
   const Icon = kind?.icon;
   const overloaded = d.cpu > 85 || d.memory > 88;
+  const loadedLatency = d.liveLatency > d.latency * 2 || (d.latency > 0 && d.liveLatency > 120);
 
   return (
     <div
@@ -50,7 +51,17 @@ export function ArchNode({ data, selected }: NodeProps) {
         <span className="rounded-full bg-surface-3 px-2 py-0.5">
           ${(d.cost * d.instances).toFixed(2)}/h
         </span>
-        <span className="rounded-full bg-surface-3 px-2 py-0.5">{d.latency}ms</span>
+        <span
+          className={`rounded-full px-2 py-0.5 ${
+            d.simulating
+              ? loadedLatency
+                ? "bg-destructive/20 text-destructive"
+                : "bg-secondary/20 text-secondary"
+              : "bg-surface-3 text-muted-foreground"
+          }`}
+        >
+          {d.simulating ? d.liveLatency : d.latency}ms
+        </span>
       </div>
     </div>
   );
@@ -67,7 +78,9 @@ function Meter({ label, value }: { label: string; value: number }) {
           style={{ width: `${Math.min(100, value)}%` }}
         />
       </div>
-      <span className={`w-8 text-right text-[10px] ${hot ? "text-destructive" : "text-muted-foreground"}`}>
+      <span
+        className={`w-8 text-right text-[10px] ${hot ? "text-destructive" : "text-muted-foreground"}`}
+      >
         {Math.round(value)}%
       </span>
     </div>

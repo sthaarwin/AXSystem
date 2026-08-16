@@ -172,6 +172,47 @@ export const KIND_BY_TYPE: Record<string, ComponentKind> = Object.fromEntries(
   CATALOG.flatMap((g) => g.items).map((i) => [i.type, i]),
 );
 
+// A system can't serve traffic without at least one compute node, one
+// database (not cache), and a connected path between them. Caches, networking
+// and queues are optional, so a Redis node alone doesn't satisfy storage.
+export function missingRequired(
+  nodes: { id: string; type: string }[],
+  edges: { source: string; target: string }[],
+): string[] {
+  const kinds = nodes.map((n) => ({ ...n, kind: KIND_BY_TYPE[n.type] })).filter((n) => n.kind);
+  const missing: string[] = [];
+  if (!kinds.some((n) => n.kind.category === "Compute")) missing.push("a Compute node");
+  const hasDb = kinds.some(
+    (n) => n.kind.category === "Database & Cache" && n.kind.type !== "redis",
+  );
+  if (!hasDb) missing.push("a database");
+  if (missing.length > 0) return missing;
+
+  const adj = new Map<string, string[]>();
+  for (const n of kinds) adj.set(n.id, []);
+  for (const e of edges) {
+    adj.get(e.source)?.push(e.target);
+    adj.get(e.target)?.push(e.source);
+  }
+  const computeNode = kinds.find((n) => n.kind.category === "Compute")!.id;
+  const seen = new Set<string>([computeNode]);
+  const queue = [computeNode];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    for (const next of adj.get(id) ?? []) {
+      if (!seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  const dbReachable = kinds.some(
+    (n) => n.kind.category === "Database & Cache" && n.kind.type !== "redis" && seen.has(n.id),
+  );
+  if (!dbReachable) missing.push("a connection between compute and database");
+  return missing;
+}
+
 export type NodeData = {
   type: string;
   label: string;
@@ -179,6 +220,7 @@ export type NodeData = {
   strategy: string;
   cost: number;
   latency: number;
+  liveLatency: number;
   cpu: number;
   memory: number;
   simulating: boolean;

@@ -1,14 +1,41 @@
-# System Design Canvas
+# AXSystem — System Design Canvas
 
-"Build a Material Design 3 (Dark Theme) interactive system design canvas app.Design Theme: Material You / Material 3 Dark Palette (#121212 background, surface elevation dark grays #1E1E1E and #2D2D2D, primary accent color #A8C7FA Google Blue, secondary #C4E7FF, and alert #F2B8B5). Use clean Material Design rounded cards (rounded-3xl and rounded-2xl), subtle ripple hover effects, and crisp icon buttons using Lucide icons.Core Features & Layout:Sidebar (Drag Source): A collapsible dark Material panel listing architectural components grouped by category:Compute: Monolith, Microservice Node, Stateless Worker, Stateful ServerNetworking: Load Balancer (L4/L7), API Gateway, Reverse ProxyDatabase & Cache: SQL Master, Read Replica, Redis Cache, Sharded ClusterQueue: Kafka/RabbitMQ QueueMain Canvas (React Flow / HTML5 Drag and Drop):Full-screen dark canvas with a subtle dot grid background.Users can drag component items from the sidebar and drop them onto the canvas.Nodes render as Material 3 Dark Surface cards with icons, live CPU/Memory badges, and connection handles (top/bottom/left/right).Users can connect nodes using animated directional edges (representing traffic flow).Interactive Config Panel (Material Drawer): Clicking any dropped node opens a right-side Material bottom-sheet/drawer to adjust parameters:Node Name & Instance CountStrategy (e.g. for Cache: LRU vs LFU; for Load Balancer: Round Robin vs Least Connections)Cost per hour ($) & Latency impact (ms)Header Control Bar:Real-time Total Estimated Monthly Cost ($) counter in Material primary pill badge.Simulate Traffic toggle button with glowing Material pulse effect.Clear Canvas and Export Architecture JSON buttons."Key Tech Stack Used Under the HoodWhen v0 generates this, it typically combines:React Flow (@xyflow/react): Handles node rendering, drag-and-drop positioning, line connecting (edges), and panning/zooming on the canvas.Tailwind CSS + Material 3 Palette: Uses custom CSS variables mapping to M3 dark tokens (Surface 1 through 5, Primary Container, On Surface Variant).Lucide React Icons: Provides clean Material-style iconography for server types (Database, Cpu, Network, Layers, HardDrive, Zap).Material Design 3 Dark Color Palette MappingIf you want to customize the generated code manually, here are the standard Material Design 3 Dark Theme tokens applied:RoleHex CodeMaterial 3 PurposeBackground#121212Main canvas backgroundSurface Level 1#1E1E1ESidebar & ToolbarsSurface Level 2#23242ANode cards on canvasPrimary Accent#A8C7FASelected items, active handles, buttonsSecondary Accent#C4E7FFConnecting lines & active traffic flowsOutline/Border#44474FSubtle borders for node cardsError/Alert#F2B8B5Overloaded nodes / bottleneck alerts
+A Material Design 3 (dark) interactive canvas for visually designing system architectures. Drag components from the palette onto the canvas, connect them, configure node properties, and export/import architecture JSON.
+
+**Features**
+- Drag-and-drop palette of architectural components (compute, networking, storage, queues)
+- Material 3 dark styled nodes with icons, badges, and connection handles
+- Connect nodes with directional animated edges to represent traffic
+- Per-node configuration drawer (name, instance count, strategy, cost, latency)
+- Real-time cost estimation and traffic simulation toggle
+- Export and import architecture JSON
+
+**Tech Stack**
+- React + TypeScript
+- React Flow (node rendering, drag/position, edges)
+- Tailwind CSS with Material 3 dark tokens
+- Vite for build/dev
 
 ## Development
 
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+Prerequisites: Node.js (use nvm to install if needed)
 
 ```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
+git clone https://github.com/sthaarwin/AXSystem.git
+cd AXSystem
+npm install
 npm run dev
 ```
+
+## Scripts
+- `npm run dev` — Start development server
+- `npm run build` — Build production bundle
+- `npm run preview` — Preview production build
+
+## Contributing
+Open issues or pull requests. For major changes, open an issue to discuss first.
+
+## License
+MIT
+
+See the `src/` directory for implementation details and `components/` for UI building blocks.
