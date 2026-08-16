@@ -1,6 +1,12 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { AlertTriangle } from "lucide-react";
-import { KIND_BY_TYPE, metersFor, type NodeData, type MeterKey } from "@/lib/architecture";
+import {
+  AUTOSCALE_HISTORY,
+  KIND_BY_TYPE,
+  metersFor,
+  type NodeData,
+  type MeterKey,
+} from "@/lib/architecture";
 
 const HANDLES = [
   { id: "t", position: Position.Top },
@@ -9,7 +15,7 @@ const HANDLES = [
   { id: "l", position: Position.Left },
 ];
 
-export function ArchNode({ data, selected }: NodeProps) {
+export function ArchNode({ id, data, selected }: NodeProps) {
   const d = data as unknown as NodeData;
   const kind = KIND_BY_TYPE[d.type];
   const Icon = kind?.icon;
@@ -102,6 +108,10 @@ export function ArchNode({ data, selected }: NodeProps) {
         </div>
       )}
 
+      {kind?.category === "Compute" && d.simulating && (
+        <Sparkline history={AUTOSCALE_HISTORY.get(id) ?? []} />
+      )}
+
       <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
         {kind?.category === "Traffic" ? (
           <span className="rounded-full bg-surface-3 px-2 py-0.5">
@@ -167,5 +177,36 @@ function Meter({ label, value, metric }: { label: string; value: number; metric:
         {isCount ? Math.round(value).toLocaleString() : `${Math.round(value)}%`}
       </span>
     </div>
+  );
+}
+
+function Sparkline({ history }: { history: number[] }) {
+  if (history.length < 2) return null;
+  const w = 200;
+  const h = 28;
+  const max = Math.max(...history, 1);
+  const pts = history
+    .map((v, i) => {
+      const x = (i / (history.length - 1)) * w;
+      const y = h - Math.min(100, (v / max) * 100) * (h / 100) * 0.85 - 2;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <svg
+      width="100%"
+      viewBox={`0 0 ${w} ${h}`}
+      preserveAspectRatio="none"
+      className="mt-2.5 h-7"
+      aria-hidden
+    >
+      <polyline
+        points={pts}
+        fill="none"
+        stroke="var(--secondary)"
+        strokeWidth="1.5"
+        opacity={0.7}
+      />
+    </svg>
   );
 }

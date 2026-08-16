@@ -24,6 +24,7 @@ import { PaletteSidebar } from "@/components/canvas/PaletteSidebar";
 import {
   KIND_BY_TYPE,
   TUNING_BY_TYPE,
+  autoLayout,
   edgeHandleKeys,
   missingRequired,
   newEdgeData,
@@ -31,7 +32,16 @@ import {
   type ComponentKind,
   type NodeData,
 } from "@/lib/architecture";
-import { Copy, Pencil, Trash2 } from "lucide-react";
+import {
+  ArrowRight,
+  Copy,
+  PanelsTopLeft,
+  Pencil,
+  Redo2,
+  Trash2,
+  Undo2,
+  Share2,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -107,6 +117,63 @@ function CanvasPage() {
     x: number;
     y: number;
   } | null>(null);
+  const [events, setEvents] = useState<
+    {
+      id: number;
+      time: string;
+      text: string;
+      tone: "info" | "warn" | "bad";
+    }[]
+  >([]);
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
+  const prevNodes = useRef(new Map<string, { cpu: number; instances: number; status: string }>());
+  const eventId = useRef(0);
+  const historyStack = useRef<{ nodes: Node[]; edges: Edge[] }[]>([]);
+  const historyIdx = useRef(-1);
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const historyRef = useRef({ nodes, edges });
+  historyRef.current = { nodes, edges };
+
+  const recordUndoPoint = useCallback(() => {
+    const snap = { nodes: historyRef.current.nodes, edges: historyRef.current.edges };
+    historyStack.current = historyStack.current
+      .slice(0, historyIdx.current + 1)
+      .concat(snap)
+      .slice(-50);
+    historyIdx.current += 1;
+    setHistoryVersion((v) => v + 1);
+  }, []);
+
+  const restore = useCallback(
+    (i: number) => {
+      const snap = historyStack.current[i];
+      if (!snap) return;
+      setSimulating(false);
+      setNodes(snap.nodes);
+      setEdges(snap.edges);
+      historyIdx.current = i;
+      setHistoryVersion((v) => v + 1);
+    },
+    [setNodes, setEdges],
+  );
+
+  const undo = useCallback(() => restore(historyIdx.current - 1), [restore]);
+  const redo = useCallback(() => restore(historyIdx.current + 1), [restore]);
+
+  const canUndo = historyIdx.current > 0;
+  const canRedo = historyIdx.current < historyStack.current.length - 1;
+
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (!(ev.metaKey || ev.ctrlKey) || ev.key.toLowerCase() !== "z") return;
+      ev.preventDefault();
+      if (ev.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
   const wrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
 
@@ -117,14 +184,16 @@ function CanvasPage() {
 
   const addNode = useCallback(
     (kind: ComponentKind, position?: { x: number; y: number }) => {
+      recordUndoPoint();
       const pos = position ?? { x: 220 + Math.random() * 240, y: 120 + Math.random() * 240 };
       setNodes((ns) => ns.concat(makeNode(kind, pos, simulating)));
     },
-    [setNodes, simulating],
+    [setNodes, simulating, recordUndoPoint],
   );
 
   const applyTemplate = useCallback(
     (template: ArchTemplate) => {
+      recordUndoPoint();
       const idMap = new Map<string, string>();
       const posMap = new Map<string, { x: number; y: number }>();
       const newNodes = template.nodes.map((t) => {
@@ -196,7 +265,7 @@ function CanvasPage() {
       setSelectedId(null);
       setMenu(null);
     },
-    [setNodes, setEdges, simulating],
+    [setNodes, setEdges, simulating, recordUndoPoint],
   );
 
   const onDrop = useCallback(
@@ -211,7 +280,8 @@ function CanvasPage() {
   );
 
   const onConnect = useCallback(
-    (params: Connection) =>
+    (params: Connection) => {
+      recordUndoPoint();
       setEdges((es) => {
         const src = nodes.find((n) => n.id === params.source);
         const tgt = nodes.find((n) => n.id === params.target);
@@ -228,8 +298,9 @@ function CanvasPage() {
           },
           es,
         );
-      }),
-    [setEdges, nodes],
+      });
+    },
+    [setEdges, nodes, recordUndoPoint],
   );
 
   // Traffic simulation: live CPU / memory drift
@@ -267,12 +338,62 @@ function CanvasPage() {
         })),
         edgesRef.current.map((e) => ({ id: e.id, source: e.source, target: e.target })),
       );
+      // Detect CPU / status / scale transitions off the pre-tick snapshot so
+      // StrictMode's double-invoke can't duplicate events.
+      const scaleEvents: { text: string; tone: "info" | "warn" | "bad" }[] = [];
+      for (const n of nodesRef.current) {
+        const d = n.data as unknown as NodeData;
+        const patch = nodePatches.get(n.id);
+        const before = prevNodes.current.get(n.id);
+        const afterCpu = patch?.cpu ?? d.cpu;
+        if (before && before.cpu <= 95 && afterCpu > 95) {
+          scaleEvents.push({ text: `${d.label} CPU ${Math.round(afterCpu)}%`, tone: "bad" });
+          prevNodes.current.set(n.id, { ...before, cpu: afterCpu });
+        }
+        if (before?.status !== "down" && d.status === "down") {
+          scaleEvents.push({ text: `${d.label} went offline`, tone: "bad" });
+          prevNodes.current.set(n.id, { ...before, status: "down" });
+        }
+        if (
+          before &&
+          patch?.instances &&
+          patch.instances !== before.instances &&
+          d.status === "healthy"
+        ) {
+          const up = patch.instances > before.instances;
+          scaleEvents.push({
+            text: `${d.label} scaled ${up ? "up" : "down"} to x${patch.instances}`,
+            tone: up ? "warn" : "info",
+          });
+          prevNodes.current.set(n.id, {
+            cpu: afterCpu,
+            instances: patch.instances,
+            status: d.status,
+          });
+        }
+        if (!before) {
+          prevNodes.current.set(n.id, { cpu: afterCpu, instances: 1, status: d.status });
+        }
+      }
       setNodes((ns) =>
         ns.map((n) => {
           const patch = nodePatches.get(n.id);
           return patch ? { ...n, data: { ...(n.data as object), ...patch } } : n;
         }),
       );
+      if (scaleEvents.length > 0) {
+        const now = new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        setEvents((es) =>
+          [...scaleEvents.map((e) => ({ id: ++eventId.current, time: now, ...e })), ...es].slice(
+            0,
+            40,
+          ),
+        );
+      }
       setEdges((es) =>
         es.map((e) => {
           const patch = edgePatches.get(e.id);
@@ -291,15 +412,17 @@ function CanvasPage() {
 
   const deleteNode = useCallback(
     (id: string) => {
+      recordUndoPoint();
       setNodes((ns) => ns.filter((n) => n.id !== id));
       setEdges((es) => es.filter((e) => e.source !== id && e.target !== id));
       setSelectedId(null);
     },
-    [setNodes, setEdges],
+    [setNodes, setEdges, recordUndoPoint],
   );
 
   const copyNode = useCallback(
     (id: string) => {
+      recordUndoPoint();
       setNodes((ns) => {
         const src = ns.find((n) => n.id === id);
         if (!src) return ns;
@@ -316,7 +439,7 @@ function CanvasPage() {
       });
       setSelectedId(null);
     },
-    [setNodes],
+    [setNodes, recordUndoPoint],
   );
 
   const closeMenu = useCallback(() => setMenu(null), []);
@@ -346,8 +469,11 @@ function CanvasPage() {
   );
 
   const deleteEdge = useCallback(
-    (id: string) => setEdges((es) => es.filter((e) => e.id !== id)),
-    [setEdges],
+    (id: string) => {
+      recordUndoPoint();
+      setEdges((es) => es.filter((e) => e.id !== id));
+    },
+    [setEdges, recordUndoPoint],
   );
 
   const toggleSimulate = useCallback(() => {
@@ -389,6 +515,8 @@ function CanvasPage() {
     const latencyById = new Map(
       nodes.map((n) => [n.id, (n.data as unknown as NodeData).liveLatency]),
     );
+    const labelById = new Map(nodes.map((n) => [n.id, (n.data as unknown as NodeData).label]));
+    const costById = new Map(nodes.map((n) => [n.id, (n.data as unknown as NodeData).cost]));
     const adj = new Map<string, { to: string; id: string }[]>();
     for (const edge of edges) {
       for (const [f, t] of [
@@ -425,7 +553,12 @@ function CanvasPage() {
     pathNodes.push(e.target);
     const ms = pathNodes.reduce((s, n) => s + (latencyById.get(n) ?? 0), 0);
     const hops = pathIds.length;
-    return { hops, ms };
+    const hopsInfo = pathNodes.map((nid) => ({
+      label: labelById.get(nid) ?? nid,
+      ms: latencyById.get(nid) ?? 0,
+      cost: costById.get(nid) ?? 0,
+    }));
+    return { hops, ms, hopsInfo };
   }, [edges, nodes, selectedEdgeId]);
 
   const exportJson = () => {
@@ -444,17 +577,13 @@ function CanvasPage() {
     URL.revokeObjectURL(url);
   };
 
-  const importArchitecture = async (file: File) => {
-    try {
-      const raw = await file.text();
-      const json = JSON.parse(raw) as {
-        nodes?: Array<{ id?: string; position?: { x?: number; y?: number }; data?: NodeData }>;
-        edges?: Array<{ id?: string; source?: string; target?: string }>;
-      };
-      if (!Array.isArray(json.nodes) || !Array.isArray(json.edges)) {
-        toast.error("Invalid file", { description: "Expected an exported architecture.json" });
-        return;
-      }
+  const applyGraph = useCallback(
+    (json: {
+      nodes?: Array<{ id?: string; position?: { x?: number; y?: number }; data?: NodeData }>;
+      edges?: Array<{ id?: string; source?: string; target?: string }>;
+    }): boolean => {
+      if (!Array.isArray(json.nodes) || !Array.isArray(json.edges)) return false;
+      recordUndoPoint();
       const posMap = new Map<string, { x: number; y: number }>();
       const newNodes = (json.nodes ?? [])
         .filter((n) => n.data && TUNING_BY_TYPE[n.data.type])
@@ -504,11 +633,69 @@ function CanvasPage() {
       setEdges(newEdges);
       setSelectedId(null);
       setMenu(null);
-      toast.success(`Imported ${newNodes.length} nodes, ${newEdges.length} edges`);
+      return true;
+    },
+    [setNodes, setEdges, recordUndoPoint],
+  );
+
+  const importArchitecture = async (file: File) => {
+    try {
+      const raw = await file.text();
+      const json = JSON.parse(raw);
+      const ok = applyGraph(json as Parameters<typeof applyGraph>[0]);
+      if (!ok) {
+        toast.error("Invalid file", { description: "Expected an exported architecture.json" });
+        return;
+      }
+      toast.success(
+        `Imported ${(json.nodes ?? []).length} nodes, ${(json.edges ?? []).length} edges`,
+      );
     } catch {
       toast.error("Import failed", { description: "Could not parse architecture.json" });
     }
   };
+
+  const autoArrange = useCallback(() => {
+    if (nodes.length === 0) return;
+    const positions = autoLayout(
+      nodes.map((n) => ({ id: n.id, type: (n.data as unknown as NodeData).type })),
+      edges.map((e) => ({ source: e.source, target: e.target })),
+    );
+    setNodes((ns) => ns.map((n) => ({ ...n, position: positions[n.id] ?? n.position })));
+  }, [nodes, edges, setNodes]);
+
+  const shareGraph = useCallback(() => {
+    const payload = {
+      v: 1,
+      nodes: nodes.map((n) => ({ id: n.id, position: n.position, ...(n.data as object) })),
+      edges: edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
+    };
+    const url = new URL(window.location.href);
+    url.searchParams.set(
+      "arch",
+      encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(payload))))),
+    );
+    window.history.replaceState({}, "", url);
+    navigator.clipboard
+      ?.writeText(url.toString())
+      .then(() => toast.success("Link copied", { description: "Open it to load this design" }))
+      .catch(() => toast.error("Couldn't access clipboard"));
+  }, [nodes, edges]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const arch = params.get("arch");
+    if (!arch) return;
+    try {
+      const json = JSON.parse(decodeURIComponent(escape(atob(arch))));
+      if (applyGraph(json)) toast.success("Loaded shared design");
+      window.history.replaceState({}, "", window.location.pathname);
+    } catch {
+      toast.error("Bad share link");
+    }
+    // only on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="flex h-screen w-full flex-col bg-background">
@@ -516,11 +703,19 @@ function CanvasPage() {
         monthlyCost={monthlyCost}
         simulating={simulating}
         nodeCount={nodes.length}
+        canUndo={canUndo}
+        canRedo={canRedo}
         onToggleSimulate={toggleSimulate}
+        onUndo={undo}
+        onRedo={redo}
+        onAutoLayout={autoArrange}
+        onShare={shareGraph}
         onClear={() => {
+          if (nodes.length > 0) recordUndoPoint();
           setNodes([]);
           setEdges([]);
           setSelectedId(null);
+          setSelectedEdgeId(null);
         }}
         onExport={exportJson}
         onImport={importArchitecture}
@@ -587,17 +782,58 @@ function CanvasPage() {
             onDelete={deleteNode}
           />
 
+          {events.length > 0 && simulating && (
+            <div className="absolute bottom-6 left-5 z-10 w-72 space-y-1">
+              {events.slice(0, 5).map((e) => (
+                <div
+                  key={e.id}
+                  className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-xs shadow-[var(--shadow-elev)] ${
+                    e.tone === "bad"
+                      ? "border-destructive/50 bg-destructive/15 text-destructive"
+                      : e.tone === "warn"
+                        ? "border-secondary/50 bg-secondary/15 text-secondary"
+                        : "border-border bg-surface-2 text-muted-foreground"
+                  }`}
+                >
+                  <span className="shrink-0 tabular-nums text-[10px] opacity-70">{e.time}</span>
+                  <span className="min-w-0 flex-1 leading-snug">{e.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
           {selectedPath && (
-            <div className="absolute bottom-6 left-1/2 z-10 -translate-x-1/2 rounded-2xl border border-border bg-surface-2 px-4 py-2.5 text-center shadow-[var(--shadow-elev)]">
-              <p className="text-[11px] uppercase tracking-widest text-muted-foreground">
-                Path latency
-              </p>
-              <p className="text-lg font-semibold text-foreground">
-                {selectedPath.ms.toFixed(1)} ms
-                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                  {selectedPath.hops} hop{selectedPath.hops === 1 ? "" : "s"}
-                </span>
-              </p>
+            <div className="absolute bottom-6 left-1/2 z-10 w-[360px] max-w-[90vw] -translate-x-1/2 rounded-2xl border border-border bg-surface-2 p-4 text-center shadow-[var(--shadow-elev)]">
+              <div className="flex items-baseline justify-center gap-3">
+                <p className="text-[11px] uppercase tracking-widest text-muted-foreground">
+                  Path latency
+                </p>
+                <p className="text-lg font-semibold text-foreground">
+                  {selectedPath.ms.toFixed(1)} ms
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    {selectedPath.hops} hop{selectedPath.hops === 1 ? "" : "s"}
+                  </span>
+                </p>
+              </div>
+              <div className="mt-2.5 space-y-1">
+                {selectedPath.hopsInfo.map((h, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center justify-between gap-2 rounded-xl bg-surface-3 px-3 py-1.5 text-[11px]"
+                  >
+                    <span className="flex min-w-0 items-center gap-1.5 truncate text-foreground">
+                      {typeof (selectedPath.hopsInfo[i - 1] as unknown) === "object" && i > 0 && (
+                        <span className="text-muted-foreground/50">→</span>
+                      )}
+                      <span className="truncate">{h.label}</span>
+                    </span>
+                    <span className="shrink-0 text-muted-foreground">
+                      {h.ms.toFixed(0)} ms
+                      {h.cost > 0 ? ` · $${h.cost.toFixed(2)}/h` : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

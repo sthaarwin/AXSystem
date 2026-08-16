@@ -314,6 +314,19 @@ export function newEdgeData(): EdgeData {
   return { rps: 0, response: 0 };
 }
 
+// Rolling CPU/instances history per compute node, fed by simulateTick and read
+// by ArchNode to draw the autoscale sparkline. A module-level map (not NodeData)
+// so it never leaks into exports/imports. Cap keeps it bounded.
+// ponytail: single in-memory ring — replace with per-node reducer if alerts or
+// long-range charts ever need it.
+export const AUTOSCALE_HISTORY = new Map<string, number[]>();
+function recordHistory(id: string, values: { cpu: number; instances: number }) {
+  const arr = AUTOSCALE_HISTORY.get(id) ?? [];
+  arr.push(values.cpu);
+  if (arr.length > 40) arr.shift();
+  AUTOSCALE_HISTORY.set(id, arr);
+}
+
 // Rough per-instance headroom (concurrent users served before saturating).
 // Load % = incoming demand / (capacity * instances). Traffic nodes have no
 // capacity — they generate demand.
@@ -333,7 +346,58 @@ const CAPACITY_BY_TYPE: Record<string, number> = {
   client: 0,
 };
 
-// Traffic enters at client nodes (their live user count) and flows downstream.
+// Left-to-right layered layout: traffic seeds layer 0, each edge bumps the
+// target one layer deeper; branches fan vertically, and the whole strip is
+// centered vertically. Disconnected nodes sit in their own row below.
+export function autoLayout(
+  nodes: { id: string; type: string }[],
+  edges: { source: string; target: string }[],
+): Record<string, { x: number; y: number }> {
+  const out = new Map<string, string[]>();
+  for (const e of edges) {
+    const list = out.get(e.source) ?? [];
+    list.push(e.target);
+    out.set(e.source, list);
+  }
+  const layer = new Map<string, number>();
+  let queue = nodes.filter((n) => KIND_BY_TYPE[n.type]?.category === "Traffic").map((n) => n.id);
+  for (const id of queue) layer.set(id, 0);
+  while (queue.length > 0) {
+    const next: string[] = [];
+    for (const id of queue) {
+      const l = layer.get(id) ?? 0;
+      for (const t of out.get(id) ?? []) {
+        const cur = layer.get(t);
+        if (cur === undefined || l + 1 < cur) {
+          layer.set(t, l + 1);
+          next.push(t);
+        }
+      }
+    }
+    queue = next;
+  }
+  const maxLayer = layer.size ? Math.max(...layer.values()) : 0;
+  const cols = new Map<number, number>();
+  const positions: Record<string, { x: number; y: number }> = {};
+  const sep = (n: number) => (n % 2 === 0 ? -n / 2 : (n + 1) / 2);
+  let orphanRow = 0;
+  for (const n of nodes) {
+    const l = layer.get(n.id) ?? maxLayer + 1 + orphanRow++;
+    const col = cols.get(l) ?? 0;
+    cols.set(l, col + 1);
+    positions[n.id] = { x: l * 320, y: sep(col) * 200 };
+  }
+  // Normalize so the layout starts near the origin.
+  const xs = Object.values(positions).map((p) => p.x);
+  const ys = Object.values(positions).map((p) => p.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  for (const p of Object.values(positions)) {
+    p.x -= minX;
+    p.y -= minY;
+  }
+  return positions;
+}
 // Only networking nodes (LB/gateway/proxy) balance demand across their
 // targets — weighted by remaining headroom, like least-connections. Everything
 // else forwards its full demand onward; caches forward only misses. FIFO
@@ -487,9 +551,14 @@ export function simulateTick(
         liveUsers: isQueue ? Math.round(tend(d.liveUsers, loadPct * 1.4, 0.15, 4)) : d.liveUsers,
         liveLatency: d.status === "down" ? Math.round(d.latency * 1.6) : d.liveLatency,
       });
+      recordHistory(n.id, {
+        cpu: d.status === "down" ? 100 : d.cpu,
+        instances,
+      });
       continue;
     }
     const nextCpu = tend(d.cpu, loadPct, 0.22, 4);
+    recordHistory(n.id, { cpu: nextCpu, instances });
     nodePatches.set(n.id, {
       instances,
       cpu: nextCpu,
@@ -508,7 +577,11 @@ export function simulateTick(
   const edgePatches = new Map<string, Partial<EdgeData>>();
   for (const e of edges) {
     const rate = edgeFlow.get(e.id) ?? 0;
-    edgePatches.set(e.id, { rps: Math.round(rate), response: Math.round(rate * 0.9) });
+    // Responses aren't fake: as the target saturates, fewer requests succeed.
+    const target = nodeById.get(e.target);
+    const cpu = target ? (nodePatches.get(e.target)?.cpu ?? target.data.cpu) : 0;
+    const success = Math.max(0.1, 1 - cpu / 100);
+    edgePatches.set(e.id, { rps: Math.round(rate), response: Math.round(rate * success) });
   }
 
   return { nodePatches, edgePatches };

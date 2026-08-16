@@ -1,4 +1,14 @@
-import { Activity, Download, Eraser, Upload, Waypoints } from "lucide-react";
+import {
+  Activity,
+  Download,
+  Eraser,
+  PanelsTopLeft,
+  Redo2,
+  Share2,
+  Undo2,
+  Upload,
+  Waypoints,
+} from "lucide-react";
 import { useRef } from "react";
 
 export function ControlBar({
@@ -8,6 +18,12 @@ export function ControlBar({
   onClear,
   onExport,
   onImport,
+  onAutoLayout,
+  onUndo,
+  onRedo,
+  onShare,
+  canUndo,
+  canRedo,
   nodeCount,
 }: {
   monthlyCost: number;
@@ -16,6 +32,12 @@ export function ControlBar({
   onClear: () => void;
   onExport: () => void;
   onImport: (file: File) => void;
+  onAutoLayout: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  onShare: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
   nodeCount: number;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -33,7 +55,32 @@ export function ControlBar({
         {nodeCount} nodes
       </span>
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex flex-wrap items-center gap-2">
+        <span className="flex items-center gap-0.5 rounded-full border border-border bg-surface-2 p-0.5">
+          <button
+            onClick={onUndo}
+            disabled={!canUndo}
+            aria-label="Undo"
+            className="m3-ripple rounded-full p-1.5 text-foreground disabled:opacity-30"
+          >
+            <Undo2 size={16} />
+          </button>
+          <button
+            onClick={onRedo}
+            disabled={!canRedo}
+            aria-label="Redo"
+            className="m3-ripple rounded-full p-1.5 text-foreground disabled:opacity-30"
+          >
+            <Redo2 size={16} />
+          </button>
+        </span>
+        <button
+          onClick={onAutoLayout}
+          aria-label="Auto-layout"
+          className="m3-ripple flex items-center gap-2 rounded-full border border-border bg-surface-2 px-4 py-2 text-sm text-foreground"
+        >
+          <PanelsTopLeft size={16} /> Layout
+        </button>
         <button
           onClick={onToggleSimulate}
           className={`m3-ripple flex items-center gap-2 rounded-full px-4 py-2 text-sm ${
@@ -44,6 +91,13 @@ export function ControlBar({
         >
           <Activity size={16} />
           {simulating ? "Simulating" : "Simulate Traffic"}
+        </button>
+        <button
+          onClick={onShare}
+          aria-label="Share architecture link"
+          className="m3-ripple flex items-center gap-2 rounded-full border border-border bg-surface-2 px-4 py-2 text-sm text-foreground"
+        >
+          <Share2 size={16} /> Share
         </button>
         <button
           onClick={onClear}
