@@ -264,7 +264,45 @@ export type NodeData = {
   storage: number;
   users: number;
   liveUsers: number;
+  tuning: number;
+  status: "healthy" | "degraded" | "down";
   simulating: boolean;
+};
+
+export type NodeStatus = NodeData["status"];
+
+// One tunable knob per node type (shown in the config drawer). `def` scales
+// capacity 1:1 for most types; for caches (redis/proxy) the value is a TTL and
+// controls how much demand is forwarded downstream (hit rate).
+export type Tuning = {
+  label: string;
+  unit: string;
+  min: number;
+  max: number;
+  step: number;
+  def: number;
+};
+
+export const TUNING_BY_TYPE: Record<string, Tuning> = {
+  monolith: { label: "Max connections", unit: "conn", min: 50, max: 10000, step: 50, def: 2000 },
+  microservice: {
+    label: "Concurrency limit",
+    unit: "req",
+    min: 10,
+    max: 5000,
+    step: 10,
+    def: 1000,
+  },
+  worker: { label: "Worker parallelism", unit: "", min: 1, max: 100, step: 1, def: 20 },
+  stateful: { label: "Session capacity", unit: "", min: 50, max: 5000, step: 50, def: 1000 },
+  lb: { label: "Max connections", unit: "conn", min: 50, max: 50000, step: 50, def: 10000 },
+  gateway: { label: "Rate limit", unit: "req/s", min: 50, max: 50000, step: 50, def: 10000 },
+  proxy: { label: "Cache TTL", unit: "s", min: 1, max: 600, step: 5, def: 60 },
+  sql: { label: "Connection pool", unit: "conn", min: 10, max: 1000, step: 10, def: 100 },
+  replica: { label: "Replication lag", unit: "ms", min: 0, max: 1000, step: 10, def: 50 },
+  redis: { label: "Cache TTL", unit: "s", min: 1, max: 600, step: 5, def: 60 },
+  shard: { label: "Shard count", unit: "", min: 2, max: 64, step: 1, def: 8 },
+  queue: { label: "Partitions", unit: "", min: 1, max: 64, step: 1, def: 6 },
 };
 
 export type EdgeData = {
@@ -295,8 +333,10 @@ const CAPACITY_BY_TYPE: Record<string, number> = {
   client: 0,
 };
 
-// Traffic enters at client nodes (their live user count) and flows downstream:
-// each node forwards its demand split evenly across its outgoing edges. FIFO
+// Traffic enters at client nodes (their live user count) and flows downstream.
+// Only networking nodes (LB/gateway/proxy) balance demand across their
+// targets — weighted by remaining headroom, like least-connections. Everything
+// else forwards its full demand onward; caches forward only misses. FIFO
 // propagation forwards each node's current total once; a back-edge contributes
 // but is not re-forwarded, so cycles can't compound.
 // ponytail: single FIFO sweep, not a solver — forks/branches resolve, exotic
@@ -311,32 +351,100 @@ export function simulateTick(
     list.push(e);
     out.set(e.source, list);
   }
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+
+  // Caches only forward misses downstream: longer TTL = more hits = less demand.
+  const isCacheType = (type: string) => type === "redis" || type === "proxy";
+  const isCache = (id: string) => isCacheType(nodeById.get(id)?.type ?? "");
+  const isNetworking = (id: string) =>
+    KIND_BY_TYPE[nodeById.get(id)?.type ?? ""]?.category === "Networking";
+
+  // TTL knobs (cache types) don't add capacity — they change hit rate only.
+  const capFor = (n: { type: string; data: NodeData }) => {
+    const tuning = TUNING_BY_TYPE[n.type];
+    const base = CAPACITY_BY_TYPE[n.type] ?? 500;
+    let cap = base * Math.max(1, n.data.instances);
+    if (tuning && !isCacheType(n.type)) cap *= (n.data.tuning || tuning.def) / tuning.def;
+    return cap;
+  };
+  // Eviction strategy shapes the TTL's hit rate: LRU keeps hot keys alive
+  // (fewer misses), Random evicts arbitrarily (more misses).
+  const evictionMiss = { LRU: 0.6, LFU: 0.75, TTL: 1, Random: 1.4 };
+  const missFactor = (n: { type: string; data: NodeData }) => {
+    const tuning = TUNING_BY_TYPE[n.type];
+    if (!tuning) return 1;
+    const ttl = n.data.tuning || tuning.def;
+    const base = Math.min(1, Math.max(0.05, 60 / ttl));
+    const ev = evictionMiss[n.data.strategy as keyof typeof evictionMiss] ?? 1;
+    return Math.min(1.4, base * ev);
+  };
 
   const flow = new Map<string, { demand: number; done: boolean }>();
   const queue: string[] = [];
   for (const n of nodes) {
-    if (KIND_BY_TYPE[n.type]?.category === "Traffic") {
+    if (KIND_BY_TYPE[n.type]?.category === "Traffic" && n.data.status !== "down") {
       flow.set(n.id, { demand: n.data.liveUsers, done: false });
       queue.push(n.id);
     }
   }
 
+  const edgeFlow = new Map<string, number>();
   while (queue.length > 0) {
     const id = queue.shift()!;
     const cur = flow.get(id);
     if (!cur || cur.done) continue;
     cur.done = true;
+    const src = nodeById.get(id);
     const outs = out.get(id);
-    if (!outs?.length) continue;
-    const share = cur.demand / outs.length;
-    for (const e of outs) {
+    if (!src || src.data.status === "down" || !outs?.length) continue;
+
+    // Networking nodes balance across targets by their strategy; everything
+    // else forwards its full demand onward. Unhealthy targets get no traffic.
+    let shares: number[];
+    const kind = KIND_BY_TYPE[src.type];
+    const miss = isCache(id) ? missFactor(src) : 1;
+    if (isNetworking(id)) {
+      const weights = outs.map((e) => {
+        const t = nodeById.get(e.target);
+        if (!t || t.data.status === "down") return 0;
+        const degrade = t.data.status === "degraded" ? 0.5 : 1;
+        // Strategy-aware: least-connections uses headroom, Round Robin is even,
+        // weighted/ip-hash spread by capacity.
+        switch (src.data.strategy) {
+          case "Least Connections":
+            return Math.max(0.05, 1 - (t.data.cpu ?? 0) / 100) * capFor(t) * degrade;
+          case "Weighted":
+            return capFor(t) * degrade;
+          case "IP Hash":
+          case "Round Robin":
+            return degrade;
+          default:
+            return Math.max(0.05, 1 - (t.data.cpu ?? 0) / 100) * capFor(t) * degrade;
+        }
+      });
+      const total = weights.reduce((a, b) => a + b, 0) || 1;
+      shares = weights.map((w, i) => (total === 0 ? 0 : cur.demand * (w / total)));
+      // gateway rate-limit: carve demand at the limit
+      if (kind?.type === "gateway" && src.data.strategy === "Rate Limit") {
+        const limit = src.data.tuning || TUNING_BY_TYPE.gateway.def;
+        const scale = Math.min(1, limit / (cur.demand || 1));
+        shares = shares.map((s) => s * scale);
+      }
+    } else {
+      shares = outs.map(() => cur.demand * miss);
+    }
+
+    for (let i = 0; i < outs.length; i++) {
+      const e = outs[i];
+      if (!shares[i]) continue;
+      edgeFlow.set(e.id, shares[i]);
       let tgt = flow.get(e.target);
       if (!tgt) {
         tgt = { demand: 0, done: false };
         flow.set(e.target, tgt);
         queue.push(e.target);
       }
-      tgt.demand += share;
+      tgt.demand += shares[i];
     }
   }
 
@@ -357,12 +465,33 @@ export function simulateTick(
       });
       continue;
     }
-    const cap = (CAPACITY_BY_TYPE[n.type] ?? 500) * Math.max(1, d.instances);
-    const loadPct = Math.min(120, ((flow.get(n.id)?.demand ?? 0) / cap) * 100);
+    // Auto-scaling: horizontal/burst strategies add instances when saturated,
+    // drop them when idle. Interactive/manual deploy strategies hold count.
+    const isCompute = kind?.category === "Compute";
+    const autoScale =
+      isCompute &&
+      (d.strategy === "Horizontal Auto" || d.strategy === "Burst" || d.strategy === "Spot Fleet");
     const tend = (cur: number, target: number, k: number, j: number) =>
       Math.min(100, Math.max(0, cur + (target - cur) * k + (Math.random() - 0.5) * j));
+    const loadPct = Math.min(120, ((flow.get(n.id)?.demand ?? 0) / capFor(n)) * 100);
+    const instances = autoScale
+      ? Math.max(1, Math.min(20, d.instances + (loadPct > 70 ? 1 : loadPct < 25 ? -1 : 0)))
+      : d.instances;
+    if (d.status !== "healthy") {
+      // Unhealthy nodes stop serving: drain demand, escalate storage-freeze,
+      // instances hold. Fully down nodes get full red state set in the UI.
+      nodePatches.set(n.id, {
+        instances,
+        cpu: d.status === "down" ? 100 : Math.min(100, d.cpu + (Math.random() - 0.5) * 6),
+        memory: d.status === "down" ? 100 : Math.min(100, d.memory + (Math.random() - 0.5) * 4),
+        liveUsers: isQueue ? Math.round(tend(d.liveUsers, loadPct * 1.4, 0.15, 4)) : d.liveUsers,
+        liveLatency: d.status === "down" ? Math.round(d.latency * 1.6) : d.liveLatency,
+      });
+      continue;
+    }
     const nextCpu = tend(d.cpu, loadPct, 0.22, 4);
     nodePatches.set(n.id, {
+      instances,
       cpu: nextCpu,
       memory: tend(d.memory, loadPct * 0.85, 0.16, 3),
       storage:
@@ -378,9 +507,7 @@ export function simulateTick(
 
   const edgePatches = new Map<string, Partial<EdgeData>>();
   for (const e of edges) {
-    const src = flow.get(e.source);
-    const outs = out.get(e.source);
-    const rate = src && outs?.length ? src.demand / outs.length : 0;
+    const rate = edgeFlow.get(e.id) ?? 0;
     edgePatches.set(e.id, { rps: Math.round(rate), response: Math.round(rate * 0.9) });
   }
 

@@ -1,4 +1,5 @@
-import { Activity, Download, Eraser, Waypoints } from "lucide-react";
+import { Activity, Download, Eraser, Upload, Waypoints } from "lucide-react";
+import { useRef } from "react";
 
 export function ControlBar({
   monthlyCost,
@@ -6,6 +7,7 @@ export function ControlBar({
   onToggleSimulate,
   onClear,
   onExport,
+  onImport,
   nodeCount,
 }: {
   monthlyCost: number;
@@ -13,8 +15,10 @@ export function ControlBar({
   onToggleSimulate: () => void;
   onClear: () => void;
   onExport: () => void;
+  onImport: (file: File) => void;
   nodeCount: number;
 }) {
+  const fileRef = useRef<HTMLInputElement>(null);
   return (
     <header className="flex flex-wrap items-center gap-3 border-b border-border bg-surface-1 px-5 py-3">
       <div className="flex items-center gap-2">
@@ -48,6 +52,24 @@ export function ControlBar({
         >
           <Eraser size={16} /> Clear
         </button>
+        <button
+          onClick={() => fileRef.current?.click()}
+          aria-label="Import architecture JSON"
+          className="m3-ripple flex items-center gap-2 rounded-full border border-border bg-surface-2 px-4 py-2 text-sm text-foreground"
+        >
+          <Upload size={16} /> Import
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/json"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onImport(f);
+            e.target.value = "";
+          }}
+        />
         <button
           onClick={onExport}
           aria-label="Export architecture JSON"

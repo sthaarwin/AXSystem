@@ -18,9 +18,12 @@ export function ArchNode({ data, selected }: NodeProps) {
     d.cpu > 97 ||
     d.memory > 97 ||
     (kind?.category === "Database & Cache" && d.storage > 96) ||
-    (kind?.category === "Traffic" && d.liveUsers > 8000);
+    (kind?.category === "Traffic" && d.liveUsers > 8000) ||
+    d.status === "down";
   const overloaded = severity || d.cpu > 85 || d.memory > 88;
   const loadedLatency = d.liveLatency > d.latency * 2 || (d.latency > 0 && d.liveLatency > 120);
+
+  const statusChip = d.status === "down" ? "bg-destructive text-destructive-foreground" : null;
 
   const warnings = [
     { id: "cpu", text: d.cpu > 92 ? "CPU overload" : "High CPU", show: d.cpu > 80 },
@@ -46,7 +49,9 @@ export function ArchNode({ data, selected }: NodeProps) {
     <div
       className={`w-56 rounded-3xl border bg-surface-2 p-4 shadow-[var(--shadow-elev)] transition-all ${
         selected ? "border-primary ring-2 ring-primary/40" : "border-border"
-      } ${severity ? "border-destructive" : ""}`}
+      } ${severity ? "border-destructive" : ""} ${
+        d.status === "down" ? "opacity-80" : d.status === "degraded" ? "border-secondary/70" : ""
+      }`}
     >
       {HANDLES.map((h) => (
         <Handle key={h.id} type="source" id={h.id} position={h.position} />
@@ -81,6 +86,19 @@ export function ArchNode({ data, selected }: NodeProps) {
           {warnings.slice(0, 2).map((w) => (
             <WarningChip key={w.id} text={w.text} severity={severity} />
           ))}
+        </div>
+      )}
+
+      {d.status !== "healthy" && (
+        <div className="mt-2.5 flex items-center justify-center">
+          <span
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+              statusChip ?? (d.status === "degraded" ? "bg-secondary/20 text-secondary" : "")
+            }`}
+          >
+            <AlertTriangle size={10} />
+            {d.status === "down" ? "OFFLINE" : "DEGRADED"}
+          </span>
         </div>
       )}
 

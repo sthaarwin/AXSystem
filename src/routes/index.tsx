@@ -23,6 +23,7 @@ import { FlowEdge } from "@/components/canvas/FlowEdge";
 import { PaletteSidebar } from "@/components/canvas/PaletteSidebar";
 import {
   KIND_BY_TYPE,
+  TUNING_BY_TYPE,
   edgeHandleKeys,
   missingRequired,
   newEdgeData,
@@ -86,6 +87,8 @@ function makeNode(
       storage: kind.category === "Database & Cache" ? 20 + Math.random() * 15 : 0,
       users: kind.category === "Traffic" ? 100 + Math.random() * 400 : 0,
       liveUsers: kind.category === "Traffic" ? 100 + Math.random() * 400 : 0,
+      tuning: TUNING_BY_TYPE[kind.type]?.def ?? 0,
+      status: "healthy",
       simulating,
     } satisfies NodeData,
   };
@@ -97,6 +100,7 @@ function CanvasPage() {
   const [collapsed, setCollapsed] = useState(false);
   const [simulating, setSimulating] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [menu, setMenu] = useState<{
     target: "node" | "edge";
     id: string;
@@ -146,6 +150,8 @@ function CanvasPage() {
             storage: kind.category === "Database & Cache" ? 20 + Math.random() * 15 : 0,
             users: kind.category === "Traffic" ? 100 + Math.random() * 400 : 0,
             liveUsers: kind.category === "Traffic" ? 100 + Math.random() * 400 : 0,
+            tuning: TUNING_BY_TYPE[kind.type]?.def ?? 0,
+            status: "healthy",
             simulating,
           } satisfies NodeData,
         } as Node;
@@ -315,6 +321,9 @@ function CanvasPage() {
 
   const closeMenu = useCallback(() => setMenu(null), []);
 
+  const getStatus = (id: string): NodeData["status"] =>
+    nodes.find((n) => n.id === id)?.data.status ?? "healthy";
+
   const openMenuAt = useCallback((event: React.MouseEvent, target: "node" | "edge", id: string) => {
     event.preventDefault();
     const bounds = wrapper.current?.getBoundingClientRect();
@@ -373,6 +382,52 @@ function CanvasPage() {
     return n ? { id: n.id, data: n.data as unknown as NodeData } : null;
   }, [nodes, selectedId]);
 
+  const selectedPath = useMemo(() => {
+    if (!selectedEdgeId) return null;
+    const e = edges.find((x) => x.id === selectedEdgeId);
+    if (!e) return null;
+    const latencyById = new Map(
+      nodes.map((n) => [n.id, (n.data as unknown as NodeData).liveLatency]),
+    );
+    const adj = new Map<string, { to: string; id: string }[]>();
+    for (const edge of edges) {
+      for (const [f, t] of [
+        [edge.source, edge.target],
+        [edge.target, edge.source],
+      ]) {
+        const list = adj.get(f) ?? [];
+        list.push({ to: t, id: edge.id });
+        adj.set(f, list);
+      }
+    }
+    const prev = new Map<string, { id: string; node: string }>();
+    const seen = new Set<string>([e.source]);
+    const queue = [e.source];
+    while (queue.length && !seen.has(e.target)) {
+      const cur = queue.shift()!;
+      for (const { to, id } of adj.get(cur) ?? []) {
+        if (seen.has(to)) continue;
+        seen.add(to);
+        prev.set(to, { id, node: cur });
+        queue.push(to);
+      }
+    }
+    if (!seen.has(e.target)) return null;
+    const pathIds: string[] = [];
+    const pathNodes: string[] = [];
+    let cur = e.target;
+    while (cur !== e.source) {
+      const p = prev.get(cur)!;
+      pathIds.unshift(p.id);
+      pathNodes.unshift(p.node);
+      cur = p.node;
+    }
+    pathNodes.push(e.target);
+    const ms = pathNodes.reduce((s, n) => s + (latencyById.get(n) ?? 0), 0);
+    const hops = pathIds.length;
+    return { hops, ms };
+  }, [edges, nodes, selectedEdgeId]);
+
   const exportJson = () => {
     const payload = {
       generatedAt: new Date().toISOString(),
@@ -389,6 +444,72 @@ function CanvasPage() {
     URL.revokeObjectURL(url);
   };
 
+  const importArchitecture = async (file: File) => {
+    try {
+      const raw = await file.text();
+      const json = JSON.parse(raw) as {
+        nodes?: Array<{ id?: string; position?: { x?: number; y?: number }; data?: NodeData }>;
+        edges?: Array<{ id?: string; source?: string; target?: string }>;
+      };
+      if (!Array.isArray(json.nodes) || !Array.isArray(json.edges)) {
+        toast.error("Invalid file", { description: "Expected an exported architecture.json" });
+        return;
+      }
+      const posMap = new Map<string, { x: number; y: number }>();
+      const newNodes = (json.nodes ?? [])
+        .filter((n) => n.data && TUNING_BY_TYPE[n.data.type])
+        .map((n) => {
+          const data = n.data as NodeData;
+          const x = n.position?.x ?? 100 + Math.random() * 200;
+          const y = n.position?.y ?? 100 + Math.random() * 200;
+          posMap.set(n.id ?? "", { x, y });
+          return {
+            id: n.id ?? nextId(),
+            type: "arch",
+            position: { x, y },
+            data: {
+              ...data,
+              liveLatency: data.latency ?? 0,
+              liveUsers: data.users ?? 0,
+              status: data.status ?? "healthy",
+              simulating: false,
+            } satisfies NodeData,
+          } as Node;
+        });
+      const positions = newNodes.reduce<Record<string, { x: number; y: number }>>(
+        (m, n) => ((m[n.id] = n.position), m),
+        {},
+      );
+      const newEdges = (json.edges ?? [])
+        .map((e) => {
+          if (!e.source || !e.target) return null;
+          const sPos = positions[e.source] ?? posMap.get(e.source ?? "");
+          const tPos = positions[e.target] ?? posMap.get(e.target ?? "");
+          const handles = sPos && tPos ? edgeHandleKeys(sPos, tPos) : undefined;
+          return {
+            id: e.id ?? nextId(),
+            source: e.source,
+            target: e.target,
+            sourceHandle: handles?.sourceHandle,
+            targetHandle: handles?.targetHandle,
+            type: "flow",
+            animated: true,
+            data: newEdgeData(),
+            style: { stroke: "var(--secondary)", strokeWidth: 2 },
+          } as Edge;
+        })
+        .filter((e): e is Edge => !!e);
+      setSimulating(false);
+      setNodes(newNodes);
+      setEdges(newEdges);
+      setSelectedId(null);
+      setMenu(null);
+      toast.success(`Imported ${newNodes.length} nodes, ${newEdges.length} edges`);
+    } catch {
+      toast.error("Import failed", { description: "Could not parse architecture.json" });
+    }
+  };
+
   return (
     <div className="flex h-screen w-full flex-col bg-background">
       <ControlBar
@@ -402,6 +523,7 @@ function CanvasPage() {
           setSelectedId(null);
         }}
         onExport={exportJson}
+        onImport={importArchitecture}
       />
 
       <div className="flex min-h-0 flex-1">
@@ -432,9 +554,14 @@ function CanvasPage() {
             }}
             onNodeContextMenu={onNodeContextMenu}
             onEdgeContextMenu={onEdgeContextMenu}
+            onEdgeClick={(_, edge) => {
+              setSelectedEdgeId(edge.id);
+              closeMenu();
+            }}
             connectionMode="loose"
             onPaneClick={() => {
               setSelectedId(null);
+              setSelectedEdgeId(null);
               closeMenu();
             }}
             fitView
@@ -460,11 +587,25 @@ function CanvasPage() {
             onDelete={deleteNode}
           />
 
+          {selectedPath && (
+            <div className="absolute bottom-6 left-1/2 z-10 -translate-x-1/2 rounded-2xl border border-border bg-surface-2 px-4 py-2.5 text-center shadow-[var(--shadow-elev)]">
+              <p className="text-[11px] uppercase tracking-widest text-muted-foreground">
+                Path latency
+              </p>
+              <p className="text-lg font-semibold text-foreground">
+                {selectedPath.ms.toFixed(1)} ms
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  {selectedPath.hops} hop{selectedPath.hops === 1 ? "" : "s"}
+                </span>
+              </p>
+            </div>
+          )}
+
           {menu && (
             <>
               <div className="fixed inset-0 z-30" onPointerDown={closeMenu} />
               <div
-                className="absolute z-40 w-44 overflow-hidden rounded-2xl border border-border bg-surface-2 py-1.5 shadow-[var(--shadow-elev)]"
+                className="absolute z-40 w-48 overflow-hidden rounded-2xl border border-border bg-surface-2 py-1.5 shadow-[var(--shadow-elev)]"
                 style={{ left: menu.x, top: menu.y }}
                 onPointerDown={(e) => e.stopPropagation()}
               >
@@ -486,6 +627,36 @@ function CanvasPage() {
                         closeMenu();
                       }}
                     />
+                    <div className="my-1 h-px bg-border" />
+                    <p className="px-4 pb-1 pt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
+                      Status
+                    </p>
+                    <StatusMenuItem
+                      label="Healthy"
+                      active={getStatus(menu.id) === "healthy"}
+                      onClick={() => {
+                        updateNode(menu.id, { status: "healthy" });
+                        closeMenu();
+                      }}
+                    />
+                    <StatusMenuItem
+                      label="Degraded"
+                      active={getStatus(menu.id) === "degraded"}
+                      onClick={() => {
+                        updateNode(menu.id, { status: "degraded" });
+                        closeMenu();
+                      }}
+                    />
+                    <StatusMenuItem
+                      label="Down"
+                      danger
+                      active={getStatus(menu.id) === "down"}
+                      onClick={() => {
+                        updateNode(menu.id, { status: "down" });
+                        closeMenu();
+                      }}
+                    />
+                    <div className="my-1 h-px bg-border" />
                     <MenuItem
                       icon={Trash2}
                       label="Delete node"
@@ -535,6 +706,31 @@ function MenuItem({
       }`}
     >
       <Icon size={15} />
+      {label}
+    </button>
+  );
+}
+
+function StatusMenuItem({
+  label,
+  danger,
+  active,
+  onClick,
+}: {
+  label: string;
+  danger?: boolean;
+  active: boolean;
+  onClick: () => void;
+}) {
+  const dot = danger ? "bg-destructive" : label === "Degraded" ? "bg-secondary" : "bg-primary";
+  return (
+    <button
+      onClick={onClick}
+      className={`m3-ripple flex w-full items-center gap-2.5 px-4 py-1.5 text-left text-sm ${
+        active ? "bg-surface-3" : "text-muted-foreground hover:bg-surface-3"
+      }`}
+    >
+      <span className={`ml-0.5 h-2 w-2 rounded-full ${dot}`} />
       {label}
     </button>
   );

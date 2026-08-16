@@ -1,5 +1,5 @@
 import { Trash2, X } from "lucide-react";
-import { KIND_BY_TYPE, type NodeData } from "@/lib/architecture";
+import { KIND_BY_TYPE, TUNING_BY_TYPE, type NodeData } from "@/lib/architecture";
 
 export function ConfigDrawer({
   node,
@@ -103,6 +103,22 @@ export function ConfigDrawer({
                   value={node.data.cost}
                   onChange={(e) => onChange(node.id, { cost: Math.max(0, Number(e.target.value)) })}
                   className="w-full rounded-2xl border border-border bg-surface-2 px-3 py-2.5 text-sm text-foreground outline-none focus:border-primary"
+                />
+              </Field>
+            )}
+
+            {kind.category !== "Traffic" && TUNING_BY_TYPE[node.data.type] && (
+              <Field
+                label={`${TUNING_BY_TYPE[node.data.type].label} · ${node.data.tuning.toLocaleString()}${TUNING_BY_TYPE[node.data.type].unit}`}
+              >
+                <input
+                  type="range"
+                  min={TUNING_BY_TYPE[node.data.type].min}
+                  max={TUNING_BY_TYPE[node.data.type].max}
+                  step={TUNING_BY_TYPE[node.data.type].step}
+                  value={node.data.tuning}
+                  onChange={(e) => onChange(node.id, { tuning: Number(e.target.value) })}
+                  className="w-full accent-[var(--primary)]"
                 />
               </Field>
             )}
