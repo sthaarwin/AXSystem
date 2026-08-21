@@ -22,6 +22,7 @@ import { ControlBar } from "@/components/canvas/ControlBar";
 import { FlowEdge } from "@/components/canvas/FlowEdge";
 import { PaletteSidebar } from "@/components/canvas/PaletteSidebar";
 import {
+  AUTOSCALE_HISTORY,
   KIND_BY_TYPE,
   TUNING_BY_TYPE,
   autoLayout,
@@ -307,6 +308,10 @@ function CanvasPage() {
   useEffect(() => {
     setNodes((ns) => ns.map((n) => ({ ...n, data: { ...n.data, simulating } })));
     if (!simulating) {
+      setEvents([]);
+      prevNodes.current.clear();
+      eventId.current = 0;
+      AUTOSCALE_HISTORY.clear();
       const t = setTimeout(() => {
         setNodes((ns) =>
           ns.map((n) => {
@@ -716,6 +721,10 @@ function CanvasPage() {
           setEdges([]);
           setSelectedId(null);
           setSelectedEdgeId(null);
+          setEvents([]);
+          prevNodes.current.clear();
+          eventId.current = 0;
+          AUTOSCALE_HISTORY.clear();
         }}
         onExport={exportJson}
         onImport={importArchitecture}
